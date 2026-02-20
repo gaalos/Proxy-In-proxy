@@ -54,49 +54,40 @@ else:
 # -----------------------
 def test_relay():
     try:
-        # Connexion vers le proxy système ou directement vers le relais
         target_host = SYS_PROXY_HOST or RELAY_HOST
         target_port = SYS_PROXY_PORT or RELAY_PORT
         sock = socket.create_connection((target_host, target_port), timeout=5)
 
-        # Si le proxy système existe et qu'on veut TLS sur le relais
         if SYS_PROXY_HOST and USE_TLS:
-            # CONNECT vers le relais
-            connect_req = f"CONNECT {RELAY_HOST}:{RELAY_PORT} HTTP/1.1\r\nHost: {RELAY_HOST}:{RELAY_PORT}\r\nConnection: close\r\n"
+            # CONNECT via system proxy
+            connect_req = f"CONNECT {RELAY_HOST}:{RELAY_PORT} HTTP/1.1\r\nHost: {RELAY_HOST}:{RELAY_PORT}\r\n"
             if RELAY_USER and RELAY_PASS:
-                auth_str = f"{RELAY_USER}:{RELAY_PASS}"
-                auth_enc = base64.b64encode(auth_str.encode()).decode()
+                auth_enc = base64.b64encode(f"{RELAY_USER}:{RELAY_PASS}".encode()).decode()
                 connect_req += f"Proxy-Authorization: Basic {auth_enc}\r\n"
             connect_req += "\r\n"
-
             sock.sendall(connect_req.encode())
-            resp = sock.recv(4096).decode()
+            resp = sock.recv(4096).decode(errors='ignore')
             if "200" not in resp:
                 print(f"[❌] CONNECT via system proxy failed: {resp.strip()}")
                 return False
-
-            # Wrap TLS après CONNECT
+            # Wrap TLS
             context = ssl.create_default_context()
-            sock = context.wrap_socket(sock, server_hostname=RELAY_HOST, do_handshake_on_connect=True)
+            sock = context.wrap_socket(sock, server_hostname=RELAY_HOST)
 
         elif USE_TLS:
-            # Pas de proxy système, TLS direct
             context = ssl.create_default_context()
-            sock = context.wrap_socket(sock, server_hostname=RELAY_HOST, do_handshake_on_connect=True)
+            sock = context.wrap_socket(sock, server_hostname=RELAY_HOST)
 
-        # Test simple : GET ifconfig.me
-        http_req = f"GET / HTTP/1.1\r\nHost: ifconfig.me\r\nConnection: close\r\n\r\n"
-        sock.sendall(http_req.encode())
+        # Test simple GET
+        sock.sendall(b"GET / HTTP/1.1\r\nHost: ifconfig.me\r\nConnection: close\r\n\r\n")
         resp = sock.recv(4096).decode(errors='ignore')
         sock.close()
-
         if "HTTP" in resp:
             if DEBUG:
                 print("[✅] Relay test OK")
             return True
-        else:
-            print("[❌] Relay response invalid")
-            return False
+        print("[❌] Relay response invalid")
+        return False
 
     except Exception as e:
         print("[❌] Relay test error:", e)
@@ -118,48 +109,32 @@ def handle_client(client_sock, client_addr):
 
         # TLS vers le relais si demandé
         if SYS_PROXY_HOST and USE_TLS:
-            # CONNECT via proxy système
-            connect_req = f"CONNECT {RELAY_HOST}:{RELAY_PORT} HTTP/1.1\r\nHost: {RELAY_HOST}:{RELAY_PORT}\r\nConnection: close\r\n"
+            # CONNECT via proxy système avec auth si nécessaire
+            connect_req = f"CONNECT {RELAY_HOST}:{RELAY_PORT} HTTP/1.1\r\nHost: {RELAY_HOST}:{RELAY_PORT}\r\n"
             if RELAY_USER and RELAY_PASS:
-                auth_str = f"{RELAY_USER}:{RELAY_PASS}"
-                auth_enc = base64.b64encode(auth_str.encode()).decode()
+                auth_enc = base64.b64encode(f"{RELAY_USER}:{RELAY_PASS}".encode()).decode()
                 connect_req += f"Proxy-Authorization: Basic {auth_enc}\r\n"
             connect_req += "\r\n"
             server_sock.sendall(connect_req.encode())
             resp = server_sock.recv(4096)
             if DEBUG:
                 print(f"[{client_addr}] CONNECT via system proxy response: {resp[:100]!r}")
-            # Wrap TLS après CONNECT
             context = ssl.create_default_context()
-            server_sock = context.wrap_socket(server_sock, server_hostname=RELAY_HOST, do_handshake_on_connect=True)
+            server_sock = context.wrap_socket(server_sock, server_hostname=RELAY_HOST)
         elif USE_TLS:
             context = ssl.create_default_context()
-            server_sock = context.wrap_socket(server_sock, server_hostname=RELAY_HOST, do_handshake_on_connect=True)
+            server_sock = context.wrap_socket(server_sock, server_hostname=RELAY_HOST)
 
         if DEBUG:
             print(f"[{client_addr}] Connected to relay {RELAY_HOST}:{RELAY_PORT}")
 
-        auth_header = None
-        if RELAY_USER and RELAY_PASS:
-            auth_str = f"{RELAY_USER}:{RELAY_PASS}"
-            auth_enc = base64.b64encode(auth_str.encode()).decode()
-            auth_header = f"Proxy-Authorization: Basic {auth_enc}\r\n"
-
+        # Relay pur des bytes (TLS-safe)
         def relay(src, dst, direction):
-            nonlocal auth_header
             while True:
                 try:
                     data = src.recv(8192)
                     if not data:
                         break
-                    # Inject auth only in the first client request
-                    if auth_header and direction == "Client→Relay":
-                        data_str = data.decode(errors='ignore')
-                        if "\r\n\r\n" in data_str:
-                            headers, rest = data_str.split("\r\n\r\n", 1)
-                            headers += "\r\n" + auth_header
-                            data = (headers + "\r\n\r\n" + rest).encode()
-                            auth_header = None
                     dst.sendall(data)
                     if DEBUG:
                         print(f"[{client_addr}] {direction}: {len(data)} bytes")
