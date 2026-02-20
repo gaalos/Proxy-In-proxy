@@ -20,3 +20,10 @@ options:
   --relay-user RELAY_USER
   --relay-pass RELAY_PASS
   --debug-transit
+
+
+
+
+
+
+M8 work with https://github.com/gaalos/Python-Proxy-Server_TLS
